@@ -89,13 +89,12 @@ class ControlPacket:
         return self.fixedHeader.toBytes()+self.variableHeader+self.payload
 
     def __repr__(self):
-        return "type:{} flags:[{} {} {} {}] vh:{} payload:{}".format(self.fixedHeader.type.name,
-                                                            self.fixedHeader.flag3,
-                                                            self.fixedHeader.flag2,
-                                                            self.fixedHeader.flag1,
-                                                            self.fixedHeader.flag0,
-                                                            self.variableHeader,
-                                                            self.payload)
+        return msg2str(self.fixedHeader.type.name,
+                       self.fixedHeader.flag3,
+                       self.fixedHeader.flag2,
+                       self.fixedHeader.flag1,
+                       self.fixedHeader.flag0,
+                       self.variableHeader+self.payload)
 
 
 class PacketIdentifier:
@@ -199,6 +198,20 @@ def PublishMsgBuilder(topic,
         return ControlPacket(fh, bytes(vh), bytes(payload))
 
 
+def msg2str(type_name,
+            flag3,
+            flag2,
+            flag1,
+            flag0,
+            body):
+    return "ControlPacket type:{} flags:[{} {} {} {}] body:{}".format(type_name,
+                                                                      flag3,
+                                                                      flag2,
+                                                                      flag1,
+                                                                      flag0,
+                                                                      bytes(body))
+
+
 class ControlPacketReader:
 
     def __init__(self, input: bytearray):
@@ -252,12 +265,12 @@ class ControlPacketReader:
         return value
 
     def __repr__(self):
-        return "type:{} flags:[{} {} {} {}] body:{}".format(self.fh.type.name,
-                                                            self.fh.flag3,
-                                                            self.fh.flag2,
-                                                            self.fh.flag1,
-                                                            self.fh.flag0,
-                                                            self.body)
+        return msg2str(self.fh.type.name,
+                       self.fh.flag3,
+                       self.fh.flag2,
+                       self.fh.flag1,
+                       self.fh.flag0,
+                       bytes(self.body))
 
 
 def PublishAckBuilder(PacketIdentifier:int):

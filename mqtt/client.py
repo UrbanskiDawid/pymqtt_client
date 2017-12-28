@@ -59,9 +59,12 @@ class Client:
                 assert ret.raw == msg.toBytes(), 'unexpected msg body expected: ({}) vs {}'.format(msg.toBytes(), ret.raw)
                 return
             else:
-                #TODO: REACT
-                print(ret.fh.type)
+                self.on_message(ret)
         assert False, 'no message'
+
+    def on_message(self, ret: messages.ControlPacketReader):
+        # TODO: REACT
+        print(ret.fh.type, ret.body)
 
     def connect(self, key, user, client_id):
         self.sock.open()
@@ -81,7 +84,7 @@ class Client:
         msg = messages.PublishMsgBuilder(topic=topic, value=value)
         self.sock.write(msg)
 
-    def subscribe(self, topic, qos=0):
+    def subscribe(self, topic, qos=1):
         packetId = messages.PacketIdentifier()
         msg = messages.SubscribeBuilder(packetId=packetId,
                                         topics=[topic],
