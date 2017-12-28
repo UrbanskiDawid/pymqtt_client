@@ -1,6 +1,6 @@
 from enum import IntEnum
 from struct import pack
-
+from random import randint
 
 MQTTv311 = 4
 
@@ -24,6 +24,7 @@ def str_2_byte_lenprefix(msg: str):
 
 class FixedHeader:
     class ControlPackettype(IntEnum):
+        RESERVED = 0,
         CONNECT = 1,
         CONNACK = 2,
         PUBLISH = 3,
@@ -35,7 +36,7 @@ class FixedHeader:
         SUBACK = 9,
         UNSUBSCRIBE = 10,
         UNSUBACK = 11,
-        PINGREG = 12,
+        PINGREQ = 12,
         PINGRES = 13,
         DISCONNECT = 14
 
@@ -50,7 +51,11 @@ class FixedHeader:
         self.remainingLength = remainingLength
 
     def toBytes(self)->bytes:
-        byte1 = self.type.value << 4 | self.flag3 << 3 | self.flag2 << 2 | self.flag1 << 1 | self.flag0 << 0
+        byte1 = self.type.value << 4 |\
+                self.flag3 << 3 |\
+                self.flag2 << 2 | \
+                self.flag1 << 1 | \
+                self.flag0 << 0
         return pack('>B'+'B'*len(self.remainingLength), byte1, *self.remainingLength)
 
     def set_remainingLength(self, x):
@@ -83,10 +88,21 @@ class ControlPacket:
     def toBytes(self)->bytes:
         return self.fixedHeader.toBytes()+self.variableHeader+self.payload
 
+    def __repr__(self):
+        return "type:{} flags:[{} {} {} {}] vh:{} payload:{}".format(self.fixedHeader.type.name,
+                                                            self.fixedHeader.flag3,
+                                                            self.fixedHeader.flag2,
+                                                            self.fixedHeader.flag1,
+                                                            self.fixedHeader.flag0,
+                                                            self.variableHeader,
+                                                            self.payload)
+
 
 class PacketIdentifier:
-    def __init__(self, id):
-        self.id = id
+    def __init__(self, identifier=None):
+        if identifier is None:
+            identifier = randint(0, 254)
+        self.id = identifier
 
     def toBytes(self)->bytes:
         return pack('>H', self.id)
@@ -139,7 +155,7 @@ def ConnectMsgBuilder(clientID:str,
     payload = []
     for i in [clientID, user, password]:
         if i:
-            payload += str_2_byte_lenprefix(i)
+            payload.extend(str_2_byte_lenprefix(i))
     ## -- ##
 
     return ControlPacket(fh, bytes(vh), bytes(payload))
@@ -169,9 +185,9 @@ def PublishMsgBuilder(topic,
                       dup_flag=False,
                       qos=0,
                       retain=True):
-        QOS = int_2_byte(qos)
-        fh = FixedHeader(FixedHeader.ControlPackettype.PUBLISH, dup_flag, QOS[0], QOS[1], retain)
-
+        QOSbit1 = qos & 0b10 >> 1
+        QOSbit0 = qos & 0b01
+        fh = FixedHeader(FixedHeader.ControlPackettype.PUBLISH, dup_flag, QOSbit0, QOSbit1, retain)
         vh = str_2_byte_lenprefix(topic)
 
         if qos != 0:
@@ -183,9 +199,126 @@ def PublishMsgBuilder(topic,
         return ControlPacket(fh, bytes(vh), bytes(payload))
 
 
+class ControlPacketReader:
+
+    def __init__(self, input: bytearray):
+        assert len(input)
+        self.bytes_read = 0
+        self.raw = bytearray()
+        buffer = bytearray(input)
+        buffer.reverse()
+        self.fh = self._consumeFixedHeader(buffer)
+        self.body = bytearray([self.pop(buffer) for i in range(self.fh.remainingLength)])
+
+    def pop(self, buffer):
+        byte = buffer.pop()
+        self.bytes_read += 1
+        self.raw.append(byte)
+        return byte
+
+    def _consumeFixedHeader(self, buffer):
+        byte0 = self.pop(buffer)
+        return FixedHeader(type =self._get_type(byte0),
+                           flag0=self._get_flag(byte0, 0),
+                           flag1=self._get_flag(byte0, 1),
+                           flag2=self._get_flag(byte0, 2),
+                           flag3=self._get_flag(byte0, 3),
+                           remainingLength=self._consume_RemainingLength(buffer))
+
+    @staticmethod
+    def _get_type(byte0) -> FixedHeader.ControlPackettype:
+        msg_type = byte0 >> 4
+        return FixedHeader.ControlPackettype(msg_type)
+
+    @staticmethod
+    def _get_flag(byte0, flagID):
+        mask = 1 << flagID
+        return byte0 & mask >> flagID
+
+    def _consume_RemainingLength(self, buffer):
+        multiplier = 1
+        value = 0
+
+        while True:
+            encodedByte = self.pop(buffer)
+
+            value += (encodedByte & 127) * multiplier
+            multiplier *= 128
+            if multiplier > 128 * 128 * 128:
+                raise Exception('Malformed Remaining Length')
+
+            if (encodedByte & 128) == 0:
+                break
+        return value
+
+    def __repr__(self):
+        return "type:{} flags:[{} {} {} {}] body:{}".format(self.fh.type.name,
+                                                            self.fh.flag3,
+                                                            self.fh.flag2,
+                                                            self.fh.flag1,
+                                                            self.fh.flag0,
+                                                            self.body)
+
+
 def PublishAckBuilder(PacketIdentifier:int):
     fh = FixedHeader(FixedHeader.ControlPackettype.PUBACK, 0,0,0,0)
 
     vh = [int_2_byte(PacketIdentifier)]
 
     return ControlPacket(fh, bytes(vh))
+
+
+def SubscribeBuilder(packetId: PacketIdentifier,
+                     topics: list(),
+                     qos=1):
+    assert isinstance(packetId, PacketIdentifier)
+    fh = FixedHeader(FixedHeader.ControlPackettype.SUBSCRIBE, 0,1,0,0)
+    vh = packetId.toBytes()
+    payload = []
+    assert isinstance(topics, list)
+    for topic in topics:
+        payload.extend(str_2_byte_lenprefix(topic))
+        payload.extend(qos.to_bytes(length=1, byteorder='big'))
+
+    return ControlPacket(fh, bytes(vh), bytes(payload))
+
+
+#0x00 - Success - Maximum QoS 0
+#0x01 - Success - Maximum QoS 1
+#0x02 - Success - Maximum QoS 2
+#0x80 - Failure
+def SubscribeAckBuilder(packetId: PacketIdentifier, ret_codes:list()):
+
+    fh = FixedHeader(FixedHeader.ControlPackettype.SUBACK, 0,0,0,0)
+    vh = packetId.toBytes()
+    payload = []
+    for code in ret_codes:
+        payload.extend(code.to_bytes(length=1, byteorder='big'))
+    return ControlPacket(fh, bytes(vh), bytes(payload))
+
+
+def UnSubscribeBuilder(packetId: PacketIdentifier,
+                       topics: list()):
+
+    fh = FixedHeader(FixedHeader.ControlPackettype.UNSUBSCRIBE, 0,1,0,0)
+    vh = packetId.toBytes()
+    payload = []
+    for topic in topics:
+        payload.extend(str_2_byte_lenprefix(topic))
+    return ControlPacket(fh, bytes(vh), bytes(payload))
+
+
+def UnSubscribeAckBuilder(packetId: PacketIdentifier):
+    fh = FixedHeader(FixedHeader.ControlPackettype.UNSUBACK, 0,0,0,0)
+    vh = packetId.toBytes()
+    return ControlPacket(fh, bytes(vh))
+
+
+def PingReqBuilder():
+    fh = FixedHeader(FixedHeader.ControlPackettype.PINGREQ, 0, 0, 0, 0)
+    return ControlPacket(fh)
+
+
+def PingResBuilder():
+    fh = FixedHeader(FixedHeader.ControlPackettype.PINGRES, 0, 0, 0, 0)
+    return ControlPacket(fh)
